@@ -14,6 +14,7 @@ import { open, readFile, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Readable } from 'node:stream';
 
 const PORT = parseInt(process.argv[2] || '8088', 10);
 const ROOT = resolve(fileURLToPath(import.meta.url), '..');
@@ -126,6 +127,62 @@ async function handleLocalFile(req, res) {
   }
 }
 
+/** Forward a Range-aware request to a Hugging Face hub resolve URL. */
+async function handleHfFile(req, res) {
+  cors(res);
+  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const target = url.searchParams.get('url');
+  if (!target) { res.writeHead(400); res.end('Missing ?url='); return; }
+
+  let parsed;
+  try { parsed = new URL(target); }
+  catch { res.writeHead(400); res.end('Invalid url'); return; }
+
+  // Security: only allow https://huggingface.co/<owner>/<repo>/resolve/...
+  if (parsed.protocol !== 'https:' || parsed.hostname !== 'huggingface.co') {
+    res.writeHead(403); res.end('Forbidden: only https://huggingface.co/ is allowed'); return;
+  }
+  if (!/^\/[^/]+\/[^/]+\/resolve\/[^/]+\/.+/.test(parsed.pathname)) {
+    res.writeHead(403); res.end('Forbidden: only /<owner>/<repo>/resolve/<rev>/<file> paths are allowed'); return;
+  }
+
+  const fwdHeaders = {};
+  if (req.headers.range) fwdHeaders['Range'] = req.headers.range;
+
+  const method = req.method === 'HEAD' ? 'HEAD' : 'GET';
+  let upstream;
+  try {
+    upstream = await fetch(parsed.toString(), { method, headers: fwdHeaders, redirect: 'follow' });
+  } catch (err) {
+    res.writeHead(502);
+    res.end(`Upstream error: ${err.message}`);
+    return;
+  }
+
+  const out = { 'Content-Type': 'application/octet-stream' };
+  const cl = upstream.headers.get('content-length');
+  const cr = upstream.headers.get('content-range');
+  const ar = upstream.headers.get('accept-ranges');
+  const et = upstream.headers.get('etag');
+  if (cl) out['Content-Length'] = cl;
+  if (cr) out['Content-Range'] = cr;
+  if (ar) out['Accept-Ranges'] = ar;
+  if (et) out['ETag'] = et;
+
+  res.writeHead(upstream.status, out);
+
+  if (method === 'HEAD' || !upstream.body) { res.end(); return; }
+
+  const nodeStream = Readable.fromWeb(upstream.body);
+  nodeStream.on('error', (err) => {
+    console.error('HF stream error:', err.message);
+    res.end();
+  });
+  nodeStream.pipe(res);
+}
+
 /** Serve static files from the project root. */
 async function handleStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -151,7 +208,9 @@ async function handleStatic(req, res) {
 
 const server = createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  const handler = url.pathname === '/api/local-file' ? handleLocalFile : handleStatic;
+  const handler = url.pathname === '/api/local-file' ? handleLocalFile
+    : url.pathname === '/api/hf-file' ? handleHfFile
+    : handleStatic;
   handler(req, res).catch((err) => {
     console.error('Request handler error:', err);
     if (!res.headersSent) { res.writeHead(500); res.end('Internal server error'); }
@@ -162,5 +221,6 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`LLM Inspector running at http://127.0.0.1:${PORT}`);
   console.log(`Serving static files from ${ROOT}`);
   console.log(`Local file proxy at /api/local-file?path=...`);
+  console.log(`Hugging Face proxy at /api/hf-file?url=...`);
 });
 

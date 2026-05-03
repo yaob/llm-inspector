@@ -196,5 +196,47 @@ describe('server.js /api/local-file proxy', () => {
     const res = await fetch(`${BASE}/src/ollama/client.js`);
     assert.equal(res.headers.get('Cache-Control'), 'no-cache');
   });
+
+  // --- /api/hf-file proxy: deterministic allowlist & validation ---
+
+  it('hf-file: returns 400 when url parameter is missing', async () => {
+    const res = await fetch(`${BASE}/api/hf-file`);
+    assert.equal(res.status, 400);
+  });
+
+  it('hf-file: returns 400 for malformed url parameter', async () => {
+    const res = await fetch(`${BASE}/api/hf-file?url=${encodeURIComponent('not a url')}`);
+    assert.equal(res.status, 400);
+  });
+
+  it('hf-file: returns 403 for non-https urls', async () => {
+    const res = await fetch(`${BASE}/api/hf-file?url=${encodeURIComponent('http://huggingface.co/o/r/resolve/main/m.gguf')}`);
+    assert.equal(res.status, 403);
+  });
+
+  it('hf-file: returns 403 for non-huggingface hosts', async () => {
+    const res = await fetch(`${BASE}/api/hf-file?url=${encodeURIComponent('https://example.com/o/r/resolve/main/m.gguf')}`);
+    assert.equal(res.status, 403);
+  });
+
+  it('hf-file: returns 403 for huggingface paths without /resolve/', async () => {
+    const res = await fetch(`${BASE}/api/hf-file?url=${encodeURIComponent('https://huggingface.co/o/r/blob/main/m.gguf')}`);
+    assert.equal(res.status, 403);
+  });
+
+  it('hf-file: returns 403 for huggingface /resolve/ urls without a file path', async () => {
+    const res = await fetch(`${BASE}/api/hf-file?url=${encodeURIComponent('https://huggingface.co/o/r/resolve/main/')}`);
+    assert.equal(res.status, 403);
+  });
+
+  it('hf-file: OPTIONS returns 204 (preflight)', async () => {
+    const res = await fetch(`${BASE}/api/hf-file?url=${encodeURIComponent('https://huggingface.co/o/r/resolve/main/m.gguf')}`, { method: 'OPTIONS' });
+    assert.equal(res.status, 204);
+  });
+
+  it('hf-file: includes CORS headers on rejected responses', async () => {
+    const res = await fetch(`${BASE}/api/hf-file?url=${encodeURIComponent('https://example.com/o/r/resolve/main/m.gguf')}`);
+    assert.equal(res.headers.get('Access-Control-Allow-Origin'), '*');
+  });
 });
 

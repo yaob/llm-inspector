@@ -285,6 +285,17 @@
         .ollama-model-meta span { display: inline-flex; align-items: center; gap: 3px; }
         .ollama-empty { color: #666; font-size: 0.85rem; font-style: italic; }
         .divider { text-align: center; color: #555; font-size: 0.8rem; margin: 4px 0 16px; text-transform: uppercase; letter-spacing: 1px; }
+
+        /* Hugging Face picker */
+        .hf-form { display: flex; flex-direction: column; gap: 10px; }
+        .hf-hint { color: #9aa4b8; font-size: 0.85rem; line-height: 1.5; }
+        .hf-hint code { background: #2a2f3a; padding: 1px 5px; border-radius: 3px; font-size: 0.78rem; color: #c6cfdd; }
+        .hf-input-row { display: flex; gap: 8px; flex-wrap: wrap; }
+        .hf-url-input { flex: 1; min-width: 260px; padding: 9px 11px; background: #1e2228; border: 1px solid #3a3f4b; border-radius: 6px; color: #e0e0e0; font-size: 0.85rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+        .hf-url-input:focus { outline: none; border-color: #4a90d9; }
+        .hf-submit-btn { padding: 9px 18px; background: #4a90d9; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+        .hf-submit-btn:hover { background: #3a7bc8; }
+        .hf-submit-btn:disabled { opacity: 0.5; cursor: default; }
     </style>
 </head>
 <body>
@@ -296,6 +307,7 @@
             <div class="source-tabs">
                 <button class="source-tab active" id="tabBtnGguf">📁 GGUF File</button>
                 <button class="source-tab" id="tabBtnOllama">🦙 Ollama <span class="ollama-badge" id="ollamaBadge">checking…</span></button>
+                <button class="source-tab" id="tabBtnHf">🤗 Hugging Face</button>
             </div>
             <div class="source-tab-panel" id="tabGguf">
                 <div class="upload-area" id="dropArea">
@@ -307,6 +319,15 @@
             <div class="source-tab-panel hidden" id="tabOllama">
                 <div class="ollama-models" id="ollamaModels">
                     <span class="ollama-empty">Detecting Ollama…</span>
+                </div>
+            </div>
+            <div class="source-tab-panel hidden" id="tabHf">
+                <div class="hf-form">
+                    <p class="hf-hint">Paste a Hugging Face GGUF file URL (Hub <code>resolve</code> link). Only the header is read over HTTP Range; the file is not downloaded.</p>
+                    <div class="hf-input-row">
+                        <input type="text" class="hf-url-input" id="hfUrlInput" placeholder="https://huggingface.co/<owner>/<repo>/resolve/main/<file>.gguf" spellcheck="false" autocomplete="off" />
+                        <button class="hf-submit-btn" id="hfSubmitBtn">Inspect</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -322,6 +343,8 @@
         import { OllamaClient } from './src/ollama/client.js?v=2';
         import { adaptOllamaModel } from './src/model/ollama-adapter.js?v=2';
         import { LazyFile } from './src/ollama/lazy-file.js?v=2';
+        import { parseHfRef } from './src/hf/client.js?v=2';
+        import { HfLazyFile } from './src/hf/lazy-file.js?v=2';
 
         const dropArea = document.getElementById('dropArea');
         const fileInput = document.getElementById('fileInput');
@@ -329,22 +352,32 @@
         const viz = document.getElementById('visualization');
         const ollamaBadge = document.getElementById('ollamaBadge');
         const ollamaModelsEl = document.getElementById('ollamaModels');
+        const hfUrlInput = document.getElementById('hfUrlInput');
+        const hfSubmitBtn = document.getElementById('hfSubmitBtn');
 
         // --- Source picker tabs ---
         const tabBtnGguf = document.getElementById('tabBtnGguf');
         const tabBtnOllama = document.getElementById('tabBtnOllama');
+        const tabBtnHf = document.getElementById('tabBtnHf');
         const tabGguf = document.getElementById('tabGguf');
         const tabOllama = document.getElementById('tabOllama');
+        const tabHf = document.getElementById('tabHf');
 
+        const TABS = [
+            { id: 'gguf', btn: tabBtnGguf, panel: tabGguf },
+            { id: 'ollama', btn: tabBtnOllama, panel: tabOllama },
+            { id: 'hf', btn: tabBtnHf, panel: tabHf },
+        ];
         function switchTab(tab) {
-            const isGguf = tab === 'gguf';
-            tabBtnGguf.classList.toggle('active', isGguf);
-            tabBtnOllama.classList.toggle('active', !isGguf);
-            tabGguf.classList.toggle('hidden', !isGguf);
-            tabOllama.classList.toggle('hidden', isGguf);
+            for (const t of TABS) {
+                const active = t.id === tab;
+                t.btn.classList.toggle('active', active);
+                t.panel.classList.toggle('hidden', !active);
+            }
         }
         tabBtnGguf.addEventListener('click', () => switchTab('gguf'));
         tabBtnOllama.addEventListener('click', () => switchTab('ollama'));
+        tabBtnHf.addEventListener('click', () => switchTab('hf'));
 
         const ollama = new OllamaClient();
         const appState = {
@@ -500,6 +533,36 @@
 
         // Kick off Ollama detection
         initOllama();
+
+        // --- Hugging Face integration ---
+        async function loadHfModel() {
+            const raw = hfUrlInput.value;
+            let ref;
+            try { ref = parseHfRef(raw); }
+            catch (err) {
+                status.textContent = `Error: ${err.message}`;
+                status.className = 'error';
+                return;
+            }
+
+            status.textContent = `Loading ${ref.filePath} from Hugging Face...`;
+            status.className = '';
+            viz.innerHTML = '';
+            hfSubmitBtn.disabled = true;
+
+            try {
+                const lazyFile = await HfLazyFile.create(ref.resolveUrl, `hf:${ref.owner}/${ref.repo}/${ref.filePath}`);
+                await processFile(lazyFile);
+            } catch (err) {
+                status.textContent = `Error: ${err.message}`;
+                status.className = 'error';
+                console.error(err);
+            } finally {
+                hfSubmitBtn.disabled = false;
+            }
+        }
+        hfSubmitBtn.addEventListener('click', loadHfModel);
+        hfUrlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') loadHfModel(); });
 
         // --- File upload (existing) ---
         document.getElementById('browseBtn').addEventListener('click', (e) => {
