@@ -1,6 +1,6 @@
 # LLM Inspector
 
-A browser-based tool for inspecting and visualizing the internal structure of Large Language Models. Drag-and-drop a GGUF file or connect to a local Ollama instance and instantly explore the model's architecture — layers, tensors, quantization, weight heatmaps, and dataflow diagrams. Everything runs client-side; no server, no uploads, no API keys.
+A browser-based tool for inspecting and visualizing the internal structure of Large Language Models. Drag-and-drop a GGUF file, connect to a local Ollama instance, or paste a Hugging Face repo URL and instantly explore the model's architecture — layers, tensors, quantization, weight heatmaps, and dataflow diagrams. Only file headers are read (over HTTP Range for remote files), so it works with multi-gigabyte models without downloading them.
 
 > **Try it now** — clone the repo, run `npm start`, and drop any `.gguf` file onto the page.
 
@@ -21,6 +21,7 @@ A browser-based tool for inspecting and visualizing the internal structure of La
 ## Features
 
 - 📦 **GGUF file parsing** — reads the binary header, metadata, and tensor index without loading weights into memory, so it works with multi-gigabyte models
+- 🤗 **Hugging Face repos** — paste a repo URL or `<owner>/<repo>` shorthand and inspect a Safetensors model directly from the Hub via HTTP Range requests; supports LLaMA / Mistral / Qwen2 / Qwen3 / Gemma / Gemma2 / Phi3 / Mixtral (MoE) / Mamba (SSM); optional access token for gated/private repos
 - 🦙 **Ollama integration** — auto-detects locally running Ollama and lists installed models for one-click inspection
 - 🧭 **Architecture-aware residual flow diagrams** — interactive SVG dataflow visualizations for Attention, MLP, MoE (Mixture of Experts), and SSM (Mamba) blocks
 - 🔥 **Weight heatmaps** — dequantizes and renders tensor slices as color-mapped heatmaps with paginated row navigation (supports F32, F16, BF16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K–Q6_K)
@@ -56,6 +57,17 @@ Then open [http://localhost:8088](http://localhost:8088) in your browser.
 **Option A — GGUF file upload**: Drag-and-drop a `.gguf` file onto the upload area (or click to browse). Only the header is read; the full file is not loaded into memory.
 
 **Option B — Ollama**: If [Ollama](https://ollama.com/) is running locally on port 11434, installed models appear automatically. Click any model card to inspect it.
+
+**Option C — Hugging Face**: Switch to the `🤗 Hugging Face` tab and paste any of:
+
+- a `<owner>/<repo>` shorthand, e.g. `Qwen/Qwen2.5-0.5B`
+- a repo URL, e.g. `https://huggingface.co/state-spaces/mamba-130m-hf`
+- a specific revision, e.g. `mistralai/Mistral-7B-v0.1@main`
+- a direct GGUF resolve URL, e.g. `https://huggingface.co/TheBloke/Llama-2-7B-Chat-GGUF/resolve/main/llama-2-7b-chat.Q4_0.gguf`
+
+Click **Inspect**. The dev server proxies the request to `huggingface.co` (so the browser can issue Range reads cross-origin) and returns only the bytes the parser needs — `config.json`, `model.safetensors.index.json`, and the JSON header of each shard. The weights themselves are never downloaded.
+
+For **gated or private** repos (e.g. `meta-llama/*`, `google/gemma-*`), paste a Hugging Face access token into the **HF Token** field at the top of the tab and click **Save**. The token is kept in your browser's `localStorage` and forwarded to `huggingface.co` only — the proxy's host allowlist guarantees it cannot leak elsewhere. Generate a token at <https://huggingface.co/settings/tokens>.
 
 ## License
 

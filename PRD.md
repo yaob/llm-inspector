@@ -50,17 +50,18 @@ LLM Inspector is a browser-based tool that lets you drag-and-drop a model file a
 - [x] Model structure analyzer (group tensors by block, classify by component)
 - [x] Vertical layer stack visualization with expandable blocks
 - [x] Summary card with key model metadata
-- [ ] **Ollama model picker**: Detect locally installed Ollama models (via `GET http://localhost:11434/api/tags`) and let users select one to visualize instead of drag-and-drop. Resolve the model's GGUF file path from Ollama's blob storage and load it directly.
+- [x] **Ollama model picker**: Detect locally installed Ollama models (via `GET http://localhost:11434/api/tags`) and let users select one to visualize instead of drag-and-drop. Resolve the model's GGUF file path from Ollama's blob storage and load it directly.
+- [x] **Hugging Face source**: Paste an `<owner>/<repo>[@rev]` shorthand or repo URL and inspect a Safetensors model directly from the Hub via HTTP Range. Sharded models (`model.safetensors.index.json`), single-shard repos, and direct GGUF resolve URLs all supported. Optional access token (stored in `localStorage`, forwarded only to `huggingface.co`) unlocks gated/private repos.
 - [ ] Handle edge cases: sharded GGUF files, corrupt headers, very large metadata
 - [ ] Basic error states and loading feedback
 
 ### P1 — Multi-format & Deeper Inspection
 > Support SafeTensors and add quantization/architecture visualizations.
 
-- [ ] **SafeTensors parser**: Read JSON header from `.safetensors` files (US-5)
-- [ ] **Config JSON parser**: Parse HuggingFace `config.json` for architecture info
+- [x] **SafeTensors parser**: Read JSON header from `.safetensors` files (US-5)
+- [x] **Config JSON parser**: Parse HuggingFace `config.json` for architecture info; map LLaMA/Mistral/Qwen2/Qwen3/Gemma/Gemma2/Phi3/Mixtral/Mamba tensor names to GGUF naming
 - [ ] **Quantization heatmap**: Color-coded grid showing quant type per tensor across all layers (US-7)
-- [ ] **Architecture dataflow diagram**: D3-rendered diagram showing data path through the transformer (US-6)
+- [x] **Architecture dataflow diagram**: D3-rendered diagram showing data path through the transformer, with Attention / MLP / MoE / SSM variants (US-6)
 - [ ] **Parameter distribution chart**: Bar/treemap showing where parameters are concentrated (embedding vs attention vs MLP)
 
 ### P2 — Deep Introspection & Sharing
