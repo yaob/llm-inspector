@@ -127,64 +127,80 @@ async function handleLocalFile(req, res) {
   }
 }
 
-/** Forward a Range-aware request to a Hugging Face hub resolve URL. */
-async function handleHfFile(req, res) {
-  cors(res);
-  if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
+const HF_UPSTREAM_TIMEOUT_MS = 30_000;
 
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const target = url.searchParams.get('url');
-  if (!target) { res.writeHead(400); res.end('Missing ?url='); return; }
+/**
+ * Build the Hugging Face proxy handler. Exported as a factory so tests can
+ * inject a mock fetchImpl and exercise the upstream-success path without
+ * touching the network.
+ */
+export function createHfFileHandler({ fetchImpl = fetch, timeoutMs = HF_UPSTREAM_TIMEOUT_MS } = {}) {
+  return async function handleHfFile(req, res) {
+    cors(res);
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
-  let parsed;
-  try { parsed = new URL(target); }
-  catch { res.writeHead(400); res.end('Invalid url'); return; }
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const target = url.searchParams.get('url');
+    if (!target) { res.writeHead(400); res.end('Missing ?url='); return; }
 
-  // Security: only allow https://huggingface.co/<owner>/<repo>/resolve/...
-  if (parsed.protocol !== 'https:' || parsed.hostname !== 'huggingface.co') {
-    res.writeHead(403); res.end('Forbidden: only https://huggingface.co/ is allowed'); return;
-  }
-  if (!/^\/[^/]+\/[^/]+\/resolve\/[^/]+\/.+/.test(parsed.pathname)) {
-    res.writeHead(403); res.end('Forbidden: only /<owner>/<repo>/resolve/<rev>/<file> paths are allowed'); return;
-  }
+    let parsed;
+    try { parsed = new URL(target); }
+    catch { res.writeHead(400); res.end('Invalid url'); return; }
 
-  const fwdHeaders = {};
-  if (req.headers.range) fwdHeaders['Range'] = req.headers.range;
-  // Forward Authorization to huggingface.co only — the allowlist above guarantees
-  // no token can leak to any other host.
-  if (req.headers.authorization) fwdHeaders['Authorization'] = req.headers.authorization;
+    // Security: only allow https://huggingface.co/<owner>/<repo>/resolve/...
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'huggingface.co') {
+      res.writeHead(403); res.end('Forbidden: only https://huggingface.co/ is allowed'); return;
+    }
+    if (!/^\/[^/]+\/[^/]+\/resolve\/[^/]+\/.+/.test(parsed.pathname)) {
+      res.writeHead(403); res.end('Forbidden: only /<owner>/<repo>/resolve/<rev>/<file> paths are allowed'); return;
+    }
 
-  const method = req.method === 'HEAD' ? 'HEAD' : 'GET';
-  let upstream;
-  try {
-    upstream = await fetch(parsed.toString(), { method, headers: fwdHeaders, redirect: 'follow' });
-  } catch (err) {
-    res.writeHead(502);
-    res.end(`Upstream error: ${err.message}`);
-    return;
-  }
+    const fwdHeaders = {};
+    if (req.headers.range) fwdHeaders['Range'] = req.headers.range;
+    // Forward Authorization to huggingface.co only — the allowlist above guarantees
+    // no token can leak to any other host.
+    if (req.headers.authorization) fwdHeaders['Authorization'] = req.headers.authorization;
 
-  const out = { 'Content-Type': 'application/octet-stream' };
-  const cl = upstream.headers.get('content-length');
-  const cr = upstream.headers.get('content-range');
-  const ar = upstream.headers.get('accept-ranges');
-  const et = upstream.headers.get('etag');
-  if (cl) out['Content-Length'] = cl;
-  if (cr) out['Content-Range'] = cr;
-  if (ar) out['Accept-Ranges'] = ar;
-  if (et) out['ETag'] = et;
+    const method = req.method === 'HEAD' ? 'HEAD' : 'GET';
+    let upstream;
+    try {
+      upstream = await fetchImpl(parsed.toString(), {
+        method,
+        headers: fwdHeaders,
+        redirect: 'follow',
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (err) {
+      const isTimeout = err.name === 'TimeoutError' || err.name === 'AbortError';
+      res.writeHead(isTimeout ? 504 : 502);
+      res.end(`Upstream ${isTimeout ? 'timeout' : 'error'}: ${err.message}`);
+      return;
+    }
 
-  res.writeHead(upstream.status, out);
+    const out = { 'Content-Type': 'application/octet-stream' };
+    const cl = upstream.headers.get('content-length');
+    const cr = upstream.headers.get('content-range');
+    const ar = upstream.headers.get('accept-ranges');
+    const et = upstream.headers.get('etag');
+    if (cl) out['Content-Length'] = cl;
+    if (cr) out['Content-Range'] = cr;
+    if (ar) out['Accept-Ranges'] = ar;
+    if (et) out['ETag'] = et;
 
-  if (method === 'HEAD' || !upstream.body) { res.end(); return; }
+    res.writeHead(upstream.status, out);
 
-  const nodeStream = Readable.fromWeb(upstream.body);
-  nodeStream.on('error', (err) => {
-    console.error('HF stream error:', err.message);
-    res.end();
-  });
-  nodeStream.pipe(res);
+    if (method === 'HEAD' || !upstream.body) { res.end(); return; }
+
+    const nodeStream = Readable.fromWeb(upstream.body);
+    nodeStream.on('error', (err) => {
+      console.error('HF stream error:', err.message);
+      res.end();
+    });
+    nodeStream.pipe(res);
+  };
 }
+
+const handleHfFile = createHfFileHandler();
 
 /** Serve static files from the project root. */
 async function handleStatic(req, res) {
@@ -220,10 +236,14 @@ const server = createServer((req, res) => {
   });
 });
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`LLM Inspector running at http://127.0.0.1:${PORT}`);
-  console.log(`Serving static files from ${ROOT}`);
-  console.log(`Local file proxy at /api/local-file?path=...`);
-  console.log(`Hugging Face proxy at /api/hf-file?url=...`);
-});
+// Only start listening when run as a script, not when imported by tests.
+const isMain = import.meta.url === `file://${process.argv[1]}`;
+if (isMain) {
+  server.listen(PORT, '127.0.0.1', () => {
+    console.log(`LLM Inspector running at http://127.0.0.1:${PORT}`);
+    console.log(`Serving static files from ${ROOT}`);
+    console.log(`Local file proxy at /api/local-file?path=...`);
+    console.log(`Hugging Face proxy at /api/hf-file?url=...`);
+  });
+}
 
