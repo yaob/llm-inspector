@@ -323,9 +323,13 @@
             </div>
             <div class="source-tab-panel hidden" id="tabHf">
                 <div class="hf-form">
-                    <p class="hf-hint">Paste a Hugging Face GGUF file URL (Hub <code>resolve</code> link). Only the header is read over HTTP Range; the file is not downloaded.</p>
+                    <p class="hf-hint">
+                        Paste a Hugging Face repo URL (e.g. <code>huggingface.co/meta-llama/Llama-3.2-1B</code>),
+                        a <code>&lt;owner&gt;/&lt;repo&gt;</code> shorthand, or a direct GGUF
+                        <code>resolve</code> link. Only headers are read over HTTP Range — files are not downloaded.
+                    </p>
                     <div class="hf-input-row">
-                        <input type="text" class="hf-url-input" id="hfUrlInput" placeholder="https://huggingface.co/<owner>/<repo>/resolve/main/<file>.gguf" spellcheck="false" autocomplete="off" />
+                        <input type="text" class="hf-url-input" id="hfUrlInput" placeholder="meta-llama/Llama-3.2-1B  or  https://huggingface.co/<owner>/<repo>/resolve/main/<file>.gguf" spellcheck="false" autocomplete="off" />
                         <button class="hf-submit-btn" id="hfSubmitBtn">Inspect</button>
                     </div>
                 </div>
@@ -343,8 +347,10 @@
         import { OllamaClient } from './src/ollama/client.js?v=2';
         import { adaptOllamaModel } from './src/model/ollama-adapter.js?v=2';
         import { LazyFile } from './src/ollama/lazy-file.js?v=2';
-        import { parseHfRef } from './src/hf/client.js?v=2';
+        import { parseHfRef, parseHfRepoRef } from './src/hf/client.js?v=3';
         import { HfLazyFile } from './src/hf/lazy-file.js?v=2';
+        import { loadHfRepo } from './src/hf/repo-loader.js?v=1';
+        import { adaptHfRepo } from './src/model/hf-adapter.js?v=1';
 
         const dropArea = document.getElementById('dropArea');
         const fileInput = document.getElementById('fileInput');
@@ -537,22 +543,33 @@
         // --- Hugging Face integration ---
         async function loadHfModel() {
             const raw = hfUrlInput.value;
-            let ref;
-            try { ref = parseHfRef(raw); }
-            catch (err) {
-                status.textContent = `Error: ${err.message}`;
-                status.className = 'error';
-                return;
+
+            // Try file URL first (existing GGUF path); fall through to repo on failure.
+            let fileRef = null;
+            try { fileRef = parseHfRef(raw); } catch { /* not a file URL */ }
+
+            let repoRef = null;
+            if (!fileRef) {
+                try { repoRef = parseHfRepoRef(raw); }
+                catch (err) {
+                    status.textContent = `Error: ${err.message}`;
+                    status.className = 'error';
+                    return;
+                }
             }
 
-            status.textContent = `Loading ${ref.filePath} from Hugging Face...`;
             status.className = '';
             viz.innerHTML = '';
             hfSubmitBtn.disabled = true;
 
             try {
-                const lazyFile = await HfLazyFile.create(ref.resolveUrl, `hf:${ref.owner}/${ref.repo}/${ref.filePath}`);
-                await processFile(lazyFile);
+                if (fileRef) {
+                    status.textContent = `Loading ${fileRef.filePath} from Hugging Face...`;
+                    const lazyFile = await HfLazyFile.create(fileRef.resolveUrl, `hf:${fileRef.owner}/${fileRef.repo}/${fileRef.filePath}`);
+                    await processFile(lazyFile);
+                } else {
+                    await loadHfSafetensors(repoRef);
+                }
             } catch (err) {
                 status.textContent = `Error: ${err.message}`;
                 status.className = 'error';
@@ -560,6 +577,20 @@
             } finally {
                 hfSubmitBtn.disabled = false;
             }
+        }
+
+        async function loadHfSafetensors(ref) {
+            const repoId = `${ref.owner}/${ref.repo}`;
+            status.textContent = `Loading ${repoId} (${ref.revision})…`;
+            const { config, tensors, shards } = await loadHfRepo(ref, (msg) => { status.textContent = msg; });
+            status.textContent = 'Analyzing model structure…';
+            const model = adaptHfRepo({
+                config, tensors, repoId,
+                source: { kind: 'hf-repo', repoId, revision: ref.revision, shards },
+                analyzeModel,
+            });
+            status.textContent = '';
+            showModel(model);
         }
         hfSubmitBtn.addEventListener('click', loadHfModel);
         hfUrlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') loadHfModel(); });

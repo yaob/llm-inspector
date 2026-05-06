@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseHfRef, isGgufPath } from '../src/hf/client.js';
+import { parseHfRef, isGgufPath, parseHfRepoRef, buildResolveUrl } from '../src/hf/client.js';
 
 describe('parseHfRef', () => {
   it('parses a canonical resolve URL', () => {
@@ -88,5 +88,88 @@ describe('isGgufPath', () => {
     assert.equal(isGgufPath(null), false);
     assert.equal(isGgufPath(undefined), false);
     assert.equal(isGgufPath(42), false);
+  });
+});
+
+describe('parseHfRepoRef', () => {
+  it('parses a bare huggingface.co repo URL', () => {
+    const r = parseHfRepoRef('https://huggingface.co/meta-llama/Llama-3.2-1B');
+    assert.equal(r.owner, 'meta-llama');
+    assert.equal(r.repo, 'Llama-3.2-1B');
+    assert.equal(r.revision, 'main');
+    assert.equal(r.repoUrl, 'https://huggingface.co/meta-llama/Llama-3.2-1B');
+    assert.equal(r.resolveBaseUrl, 'https://huggingface.co/meta-llama/Llama-3.2-1B/resolve/main');
+  });
+
+  it('parses /tree/<rev> URLs and uses that revision', () => {
+    const r = parseHfRepoRef('https://huggingface.co/o/r/tree/abc123');
+    assert.equal(r.revision, 'abc123');
+    assert.equal(r.resolveBaseUrl, 'https://huggingface.co/o/r/resolve/abc123');
+  });
+
+  it('parses <owner>/<repo> shorthand', () => {
+    const r = parseHfRepoRef('meta-llama/Llama-3.2-1B');
+    assert.equal(r.owner, 'meta-llama');
+    assert.equal(r.repo, 'Llama-3.2-1B');
+    assert.equal(r.revision, 'main');
+  });
+
+  it('parses <owner>/<repo>@<rev> shorthand', () => {
+    const r = parseHfRepoRef('owner/repo@v1.0');
+    assert.equal(r.revision, 'v1.0');
+  });
+
+  it('trims whitespace', () => {
+    const r = parseHfRepoRef('   owner/repo   ');
+    assert.equal(r.owner, 'owner');
+    assert.equal(r.repo, 'repo');
+  });
+
+  it('rejects file (resolve) URLs so callers fall back to parseHfRef', () => {
+    assert.throws(() => parseHfRepoRef('https://huggingface.co/o/r/resolve/main/m.gguf'), /file URL/i);
+  });
+
+  it('rejects blob URLs', () => {
+    assert.throws(() => parseHfRepoRef('https://huggingface.co/o/r/blob/main/m.gguf'), /file URL/i);
+  });
+
+  it('rejects URLs missing the repo segment', () => {
+    assert.throws(() => parseHfRepoRef('https://huggingface.co/owner'), /owner.*repo/i);
+  });
+
+  it('rejects non-huggingface hosts', () => {
+    assert.throws(() => parseHfRepoRef('https://example.com/o/r'), /huggingface\.co/);
+  });
+
+  it('rejects empty or non-string input', () => {
+    assert.throws(() => parseHfRepoRef(''), /empty/);
+    assert.throws(() => parseHfRepoRef('   '), /empty/);
+    assert.throws(() => parseHfRepoRef(null), /string/);
+  });
+
+  it('rejects malformed shorthand', () => {
+    assert.throws(() => parseHfRepoRef('not-a-ref'), /shorthand|URL/);
+    assert.throws(() => parseHfRepoRef('owner/'), /shorthand|URL/);
+    assert.throws(() => parseHfRepoRef('/repo'), /shorthand|URL/);
+  });
+
+  it('rejects names with invalid characters', () => {
+    assert.throws(() => parseHfRepoRef('own er/repo'), /shorthand|invalid/i);
+  });
+});
+
+describe('buildResolveUrl', () => {
+  it('builds a canonical resolve URL', () => {
+    const url = buildResolveUrl({ owner: 'o', repo: 'r', revision: 'main' }, 'config.json');
+    assert.equal(url, 'https://huggingface.co/o/r/resolve/main/config.json');
+  });
+
+  it('preserves nested file paths', () => {
+    const url = buildResolveUrl({ owner: 'o', repo: 'r', revision: 'abc' }, 'sub/dir/m.safetensors');
+    assert.equal(url, 'https://huggingface.co/o/r/resolve/abc/sub/dir/m.safetensors');
+  });
+
+  it('throws when filePath is missing', () => {
+    assert.throws(() => buildResolveUrl({ owner: 'o', repo: 'r', revision: 'main' }, ''), /filePath/);
   });
 });
