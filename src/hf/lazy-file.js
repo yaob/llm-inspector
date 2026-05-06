@@ -5,6 +5,8 @@
  * Implements the subset of the File/Blob API used by the GGUF parser and
  * tensor decoder: .name, .size, .slice(start, end).arrayBuffer().
  */
+import { authHeaders, authErrorMessage, isAuthError } from './token.js';
+
 export class HfLazyFile {
   /**
    * @param {string} resolveUrl - canonical https://huggingface.co/.../resolve/... URL
@@ -25,12 +27,12 @@ export class HfLazyFile {
    */
   static async create(resolveUrl, name) {
     const url = `/api/hf-file?url=${encodeURIComponent(resolveUrl)}`;
+    const auth = authHeaders();
 
     // Probe with a small Range GET to verify access AND seed size.
-    const probeRes = await fetch(url, { headers: { Range: 'bytes=0-3' } });
-    if (probeRes.status === 403) {
-      const msg = await probeRes.text().catch(() => '');
-      throw new Error(msg || 'Forbidden: only huggingface.co resolve URLs are allowed.');
+    const probeRes = await fetch(url, { headers: { Range: 'bytes=0-3', ...auth } });
+    if (isAuthError(probeRes.status)) {
+      throw new Error(authErrorMessage(probeRes.status));
     }
     if (!probeRes.ok && probeRes.status !== 206) {
       const msg = await probeRes.text().catch(() => '');
@@ -38,7 +40,7 @@ export class HfLazyFile {
     }
 
     // HEAD to get total file size
-    const headRes = await fetch(url, { method: 'HEAD' });
+    const headRes = await fetch(url, { method: 'HEAD', headers: auth });
     if (headRes.ok) {
       const size = parseInt(headRes.headers.get('Content-Length') || '0', 10);
       if (size) return new HfLazyFile(resolveUrl, name, size);
@@ -61,8 +63,9 @@ export class HfLazyFile {
       arrayBuffer() {
         const url = `/api/hf-file?url=${encodeURIComponent(resolveUrl)}`;
         return fetch(url, {
-          headers: { Range: `bytes=${start}-${end - 1}` },
+          headers: { Range: `bytes=${start}-${end - 1}`, ...authHeaders() },
         }).then(async res => {
+          if (isAuthError(res.status)) throw new Error(authErrorMessage(res.status));
           if (!res.ok && res.status !== 206) {
             const msg = await res.text().catch(() => '');
             throw new Error(`Failed to read bytes ${start}-${end} from ${resolveUrl}${msg ? `: ${msg}` : ''}`);

@@ -296,6 +296,14 @@
         .hf-submit-btn { padding: 9px 18px; background: #4a90d9; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
         .hf-submit-btn:hover { background: #3a7bc8; }
         .hf-submit-btn:disabled { opacity: 0.5; cursor: default; }
+        .hf-token-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        .hf-token-label { color: #9aa4b8; font-size: 0.8rem; font-weight: 500; min-width: 64px; }
+        .hf-token-input { flex: 1; min-width: 220px; padding: 7px 10px; background: #1e2228; border: 1px solid #3a3f4b; border-radius: 6px; color: #e0e0e0; font-size: 0.8rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+        .hf-token-input:focus { outline: none; border-color: #4a90d9; }
+        .hf-token-btn { padding: 7px 14px; background: #2a2f3a; color: #c6cfdd; border: 1px solid #3a3f4b; border-radius: 6px; cursor: pointer; font-size: 0.8rem; }
+        .hf-token-btn:hover { background: #343a47; color: #fff; }
+        .hf-token-status { color: #6a8d4a; font-size: 0.75rem; min-width: 80px; }
+        .hf-token-status.empty { color: #6f7b90; }
     </style>
 </head>
 <body>
@@ -328,6 +336,13 @@
                         a <code>&lt;owner&gt;/&lt;repo&gt;</code> shorthand, or a direct GGUF
                         <code>resolve</code> link. Only headers are read over HTTP Range — files are not downloaded.
                     </p>
+                    <div class="hf-token-row">
+                        <span class="hf-token-label">HF Token</span>
+                        <input type="password" class="hf-token-input" id="hfTokenInput" placeholder="hf_… (optional, for gated/private repos)" spellcheck="false" autocomplete="off" />
+                        <button class="hf-token-btn" id="hfTokenSaveBtn" type="button">Save</button>
+                        <button class="hf-token-btn" id="hfTokenClearBtn" type="button">Clear</button>
+                        <span class="hf-token-status empty" id="hfTokenStatus">no token</span>
+                    </div>
                     <div class="hf-input-row">
                         <input type="text" class="hf-url-input" id="hfUrlInput" placeholder="meta-llama/Llama-3.2-1B  or  https://huggingface.co/<owner>/<repo>/resolve/main/<file>.gguf" spellcheck="false" autocomplete="off" />
                         <button class="hf-submit-btn" id="hfSubmitBtn">Inspect</button>
@@ -348,9 +363,10 @@
         import { adaptOllamaModel } from './src/model/ollama-adapter.js?v=2';
         import { LazyFile } from './src/ollama/lazy-file.js?v=2';
         import { parseHfRef, parseHfRepoRef } from './src/hf/client.js?v=3';
-        import { HfLazyFile } from './src/hf/lazy-file.js?v=2';
-        import { loadHfRepo } from './src/hf/repo-loader.js?v=1';
+        import { HfLazyFile } from './src/hf/lazy-file.js?v=3';
+        import { loadHfRepo } from './src/hf/repo-loader.js?v=2';
         import { adaptHfRepo } from './src/model/hf-adapter.js?v=1';
+        import { getHfToken, setHfToken, clearHfToken } from './src/hf/token.js?v=1';
 
         const dropArea = document.getElementById('dropArea');
         const fileInput = document.getElementById('fileInput');
@@ -360,6 +376,37 @@
         const ollamaModelsEl = document.getElementById('ollamaModels');
         const hfUrlInput = document.getElementById('hfUrlInput');
         const hfSubmitBtn = document.getElementById('hfSubmitBtn');
+        const hfTokenInput = document.getElementById('hfTokenInput');
+        const hfTokenSaveBtn = document.getElementById('hfTokenSaveBtn');
+        const hfTokenClearBtn = document.getElementById('hfTokenClearBtn');
+        const hfTokenStatus = document.getElementById('hfTokenStatus');
+
+        // --- HF token UI ---
+        function refreshHfTokenStatus() {
+            const t = getHfToken();
+            if (t) {
+                const tail = t.length > 6 ? t.slice(-4) : '';
+                hfTokenStatus.textContent = tail ? `saved (…${tail})` : 'saved';
+                hfTokenStatus.classList.remove('empty');
+            } else {
+                hfTokenStatus.textContent = 'no token';
+                hfTokenStatus.classList.add('empty');
+            }
+        }
+        hfTokenSaveBtn.addEventListener('click', () => {
+            setHfToken(hfTokenInput.value);
+            hfTokenInput.value = '';
+            refreshHfTokenStatus();
+        });
+        hfTokenClearBtn.addEventListener('click', () => {
+            clearHfToken();
+            hfTokenInput.value = '';
+            refreshHfTokenStatus();
+        });
+        hfTokenInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { hfTokenSaveBtn.click(); }
+        });
+        refreshHfTokenStatus();
 
         // --- Source picker tabs ---
         const tabBtnGguf = document.getElementById('tabBtnGguf');

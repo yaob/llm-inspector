@@ -33,7 +33,7 @@ const MIME = {
 
 function cors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Range');
+  res.setHeader('Access-Control-Allow-Headers', 'Range, Authorization');
   res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length');
 }
 
@@ -150,6 +150,9 @@ async function handleHfFile(req, res) {
 
   const fwdHeaders = {};
   if (req.headers.range) fwdHeaders['Range'] = req.headers.range;
+  // Forward Authorization to huggingface.co only — the allowlist above guarantees
+  // no token can leak to any other host.
+  if (req.headers.authorization) fwdHeaders['Authorization'] = req.headers.authorization;
 
   const method = req.method === 'HEAD' ? 'HEAD' : 'GET';
   let upstream;

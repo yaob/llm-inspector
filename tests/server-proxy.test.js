@@ -238,5 +238,13 @@ describe('server.js /api/local-file proxy', () => {
     const res = await fetch(`${BASE}/api/hf-file?url=${encodeURIComponent('https://example.com/o/r/resolve/main/m.gguf')}`);
     assert.equal(res.headers.get('Access-Control-Allow-Origin'), '*');
   });
+
+  it('hf-file: OPTIONS advertises Range and Authorization in Access-Control-Allow-Headers', async () => {
+    const res = await fetch(`${BASE}/api/hf-file?url=${encodeURIComponent('https://huggingface.co/o/r/resolve/main/m.gguf')}`, { method: 'OPTIONS' });
+    assert.equal(res.status, 204);
+    const allow = res.headers.get('Access-Control-Allow-Headers') || '';
+    assert.match(allow, /Range/i);
+    assert.match(allow, /Authorization/i);
+  });
 });
 

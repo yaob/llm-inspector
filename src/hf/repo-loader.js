@@ -5,13 +5,19 @@
  */
 
 import { buildResolveUrl } from './client.js';
+import { authHeaders, authErrorMessage, isAuthError } from './token.js';
 import { parseSafetensorsHeader, readSafetensorsHeaderLength } from '../parsers/safetensors.js';
 
 const PROXY = (resolveUrl) => `/api/hf-file?url=${encodeURIComponent(resolveUrl)}`;
 
 /** Fetch a small repo file (config.json, index.json) as text via the proxy. */
 async function fetchRepoText(resolveUrl) {
-  const res = await fetch(PROXY(resolveUrl));
+  const res = await fetch(PROXY(resolveUrl), { headers: authHeaders() });
+  if (isAuthError(res.status)) {
+    const err = new Error(authErrorMessage(res.status));
+    err.status = res.status;
+    throw err;
+  }
   if (!res.ok) {
     const msg = await res.text().catch(() => '');
     const err = new Error(`HTTP ${res.status} ${resolveUrl}${msg ? `: ${msg}` : ''}`);
@@ -23,7 +29,10 @@ async function fetchRepoText(resolveUrl) {
 
 /** Fetch a Range from the proxy. Returns an ArrayBuffer. */
 async function fetchRange(resolveUrl, start, end) {
-  const res = await fetch(PROXY(resolveUrl), { headers: { Range: `bytes=${start}-${end}` } });
+  const res = await fetch(PROXY(resolveUrl), {
+    headers: { Range: `bytes=${start}-${end}`, ...authHeaders() },
+  });
+  if (isAuthError(res.status)) throw new Error(authErrorMessage(res.status));
   if (!res.ok && res.status !== 206) {
     const msg = await res.text().catch(() => '');
     throw new Error(`HTTP ${res.status} on ${resolveUrl}${msg ? `: ${msg}` : ''}`);
