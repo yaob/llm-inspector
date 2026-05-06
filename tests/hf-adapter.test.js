@@ -61,6 +61,40 @@ describe('mapHfTensorName', () => {
     assert.equal(mapHfTensorName('model.layers.0.self_attn.q_norm.weight', 'qwen2'), 'blk.0.attn_q_norm.weight');
     assert.equal(mapHfTensorName('model.layers.0.self_attn.k_norm.weight', 'qwen2'), 'blk.0.attn_k_norm.weight');
   });
+
+  it('maps Phi3 fused projections', () => {
+    assert.equal(mapHfTensorName('model.layers.0.self_attn.qkv_proj.weight', 'phi3'), 'blk.0.attn_qkv.weight');
+    assert.equal(mapHfTensorName('model.layers.0.self_attn.o_proj.weight', 'phi3'), 'blk.0.attn_output.weight');
+    assert.equal(mapHfTensorName('model.layers.5.mlp.gate_up_proj.weight', 'phi3'), 'blk.5.ffn_up.weight');
+    assert.equal(mapHfTensorName('model.layers.5.mlp.down_proj.weight', 'phi3'), 'blk.5.ffn_down.weight');
+    assert.equal(mapHfTensorName('model.layers.0.input_layernorm.weight', 'phi3'), 'blk.0.attn_norm.weight');
+  });
+
+  it('maps Mixtral block_sparse_moe tensors per expert', () => {
+    assert.equal(mapHfTensorName('model.layers.0.block_sparse_moe.gate.weight', 'mixtral'), 'blk.0.ffn_gate_inp.weight');
+    assert.equal(mapHfTensorName('model.layers.3.block_sparse_moe.experts.0.w1.weight', 'mixtral'), 'blk.3.ffn_gate_exp.0.weight');
+    assert.equal(mapHfTensorName('model.layers.3.block_sparse_moe.experts.7.w2.weight', 'mixtral'), 'blk.3.ffn_down_exp.7.weight');
+    assert.equal(mapHfTensorName('model.layers.3.block_sparse_moe.experts.7.w3.weight', 'mixtral'), 'blk.3.ffn_up_exp.7.weight');
+  });
+
+  it('still maps non-MoE tensors for Mixtral', () => {
+    assert.equal(mapHfTensorName('model.layers.0.self_attn.q_proj.weight', 'mixtral'), 'blk.0.attn_q.weight');
+    assert.equal(mapHfTensorName('model.layers.0.input_layernorm.weight', 'mixtral'), 'blk.0.attn_norm.weight');
+  });
+
+  it('maps Mamba backbone tensors', () => {
+    assert.equal(mapHfTensorName('backbone.layers.0.norm.weight', 'mamba'), 'blk.0.attn_norm.weight');
+    assert.equal(mapHfTensorName('backbone.layers.0.mixer.in_proj.weight', 'mamba'), 'blk.0.ssm_in.weight');
+    assert.equal(mapHfTensorName('backbone.layers.0.mixer.conv1d.weight', 'mamba'), 'blk.0.ssm_conv1d.weight');
+    assert.equal(mapHfTensorName('backbone.layers.0.mixer.conv1d.bias', 'mamba'), 'blk.0.ssm_conv1d.bias');
+    assert.equal(mapHfTensorName('backbone.layers.0.mixer.x_proj.weight', 'mamba'), 'blk.0.ssm_x.weight');
+    assert.equal(mapHfTensorName('backbone.layers.0.mixer.dt_proj.weight', 'mamba'), 'blk.0.ssm_dt.weight');
+    assert.equal(mapHfTensorName('backbone.layers.0.mixer.out_proj.weight', 'mamba'), 'blk.0.ssm_out.weight');
+    assert.equal(mapHfTensorName('backbone.layers.0.mixer.A_log', 'mamba'), 'blk.0.ssm_a.weight');
+    assert.equal(mapHfTensorName('backbone.layers.0.mixer.D', 'mamba'), 'blk.0.ssm_d.weight');
+    assert.equal(mapHfTensorName('backbone.embeddings.weight', 'mamba'), 'token_embd.weight');
+    assert.equal(mapHfTensorName('backbone.norm_f.weight', 'mamba'), 'output_norm.weight');
+  });
 });
 
 describe('adaptHfRepo', () => {
@@ -143,5 +177,65 @@ describe('adaptHfRepo', () => {
     const model = adaptHfRepo({ config: { ...config, num_hidden_layers: 1 }, tensors, repoId: 'a/b', source: src, analyzeModel });
     assert.equal(model.ggufSource?.kind, 'hf-repo');
     assert.equal(model.ggufSource?.revision, 'abc');
+  });
+
+  it('groups Mixtral per-expert tensors under the moe category', () => {
+    const numExperts = 4;
+    const hidden = 32, ffn = 64, vocab = 128;
+    const tensors = [
+      { name: 'model.embed_tokens.weight', dtype: 'F16', shape: [vocab, hidden], dataOffsets: [0, 0], numElements: vocab * hidden, byteLength: vocab * hidden * 2, ggmlType: 1 },
+      { name: 'model.norm.weight',         dtype: 'F32', shape: [hidden],         dataOffsets: [0, 0], numElements: hidden, byteLength: hidden * 4, ggmlType: 0 },
+      { name: 'lm_head.weight',            dtype: 'F16', shape: [vocab, hidden], dataOffsets: [0, 0], numElements: vocab * hidden, byteLength: vocab * hidden * 2, ggmlType: 1 },
+      { name: 'model.layers.0.input_layernorm.weight',          dtype: 'F32', shape: [hidden], dataOffsets: [0, 0], numElements: hidden, byteLength: hidden * 4, ggmlType: 0 },
+      { name: 'model.layers.0.post_attention_layernorm.weight', dtype: 'F32', shape: [hidden], dataOffsets: [0, 0], numElements: hidden, byteLength: hidden * 4, ggmlType: 0 },
+      { name: 'model.layers.0.self_attn.q_proj.weight',         dtype: 'F16', shape: [hidden, hidden], dataOffsets: [0, 0], numElements: hidden * hidden, byteLength: hidden * hidden * 2, ggmlType: 1 },
+      { name: 'model.layers.0.self_attn.k_proj.weight',         dtype: 'F16', shape: [hidden, hidden], dataOffsets: [0, 0], numElements: hidden * hidden, byteLength: hidden * hidden * 2, ggmlType: 1 },
+      { name: 'model.layers.0.self_attn.v_proj.weight',         dtype: 'F16', shape: [hidden, hidden], dataOffsets: [0, 0], numElements: hidden * hidden, byteLength: hidden * hidden * 2, ggmlType: 1 },
+      { name: 'model.layers.0.self_attn.o_proj.weight',         dtype: 'F16', shape: [hidden, hidden], dataOffsets: [0, 0], numElements: hidden * hidden, byteLength: hidden * hidden * 2, ggmlType: 1 },
+      { name: 'model.layers.0.block_sparse_moe.gate.weight',    dtype: 'F32', shape: [numExperts, hidden], dataOffsets: [0, 0], numElements: numExperts * hidden, byteLength: numExperts * hidden * 4, ggmlType: 0 },
+    ];
+    for (let e = 0; e < numExperts; e++) {
+      tensors.push({ name: `model.layers.0.block_sparse_moe.experts.${e}.w1.weight`, dtype: 'F16', shape: [ffn, hidden], dataOffsets: [0, 0], numElements: ffn * hidden, byteLength: ffn * hidden * 2, ggmlType: 1 });
+      tensors.push({ name: `model.layers.0.block_sparse_moe.experts.${e}.w2.weight`, dtype: 'F16', shape: [hidden, ffn], dataOffsets: [0, 0], numElements: hidden * ffn, byteLength: hidden * ffn * 2, ggmlType: 1 });
+      tensors.push({ name: `model.layers.0.block_sparse_moe.experts.${e}.w3.weight`, dtype: 'F16', shape: [ffn, hidden], dataOffsets: [0, 0], numElements: ffn * hidden, byteLength: ffn * hidden * 2, ggmlType: 1 });
+    }
+    const mixtralConfig = {
+      model_type: 'mixtral', num_hidden_layers: 1,
+      hidden_size: hidden, intermediate_size: ffn,
+      num_attention_heads: 4, num_key_value_heads: 2,
+      max_position_embeddings: 1024, vocab_size: vocab,
+      num_local_experts: numExperts, num_experts_per_tok: 2,
+    };
+    const model = adaptHfRepo({ config: mixtralConfig, tensors, repoId: 'x/mixtral', analyzeModel });
+    assert.equal(model.arch, 'mixtral');
+    const block0 = model.layers.find(l => l.type === 'block' && l.index === 0);
+    const moeGroup = block0.subgroups.find(s => s.label.toLowerCase() === 'moe');
+    assert.ok(moeGroup, 'block has a moe subgroup');
+    // gate (router) + 3 expert tensors per expert
+    assert.equal(moeGroup.tensors.length, 1 + numExperts * 3);
+    assert.equal(model.metadata['mixtral.expert_count'], numExperts);
+    assert.equal(model.metadata['mixtral.expert_used_count'], 2);
+  });
+
+  it('produces a Mamba model with ssm subgroup', () => {
+    const hidden = 16, vocab = 64, layers = 1;
+    const tensors = [
+      { name: 'backbone.embeddings.weight', dtype: 'F32', shape: [vocab, hidden], dataOffsets: [0, 0], numElements: vocab * hidden, byteLength: vocab * hidden * 4, ggmlType: 0 },
+      { name: 'backbone.norm_f.weight',     dtype: 'F32', shape: [hidden],         dataOffsets: [0, 0], numElements: hidden, byteLength: hidden * 4, ggmlType: 0 },
+      { name: 'lm_head.weight',             dtype: 'F32', shape: [vocab, hidden], dataOffsets: [0, 0], numElements: vocab * hidden, byteLength: vocab * hidden * 4, ggmlType: 0 },
+    ];
+    for (let i = 0; i < layers; i++) {
+      tensors.push({ name: `backbone.layers.${i}.norm.weight`,           dtype: 'F32', shape: [hidden], dataOffsets: [0, 0], numElements: hidden, byteLength: hidden * 4, ggmlType: 0 });
+      tensors.push({ name: `backbone.layers.${i}.mixer.in_proj.weight`,  dtype: 'F32', shape: [hidden * 2, hidden], dataOffsets: [0, 0], numElements: hidden * 2 * hidden, byteLength: hidden * 2 * hidden * 4, ggmlType: 0 });
+      tensors.push({ name: `backbone.layers.${i}.mixer.out_proj.weight`, dtype: 'F32', shape: [hidden, hidden],     dataOffsets: [0, 0], numElements: hidden * hidden, byteLength: hidden * hidden * 4, ggmlType: 0 });
+    }
+    const mambaConfig = { model_type: 'mamba', num_hidden_layers: layers, hidden_size: hidden, vocab_size: vocab, state_size: 16, conv_kernel: 4 };
+    const model = adaptHfRepo({ config: mambaConfig, tensors, repoId: 'x/mamba', analyzeModel });
+    assert.equal(model.arch, 'mamba');
+    assert.equal(model.metadata['mamba.ssm.state_size'], 16);
+    assert.equal(model.metadata['mamba.ssm.conv_kernel'], 4);
+    const block0 = model.layers.find(l => l.type === 'block' && l.index === 0);
+    const ssmGroup = block0.subgroups.find(s => s.label.toLowerCase() === 'ssm');
+    assert.ok(ssmGroup, 'block has an ssm subgroup');
   });
 });

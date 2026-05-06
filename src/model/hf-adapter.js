@@ -18,23 +18,40 @@ const MODEL_TYPE_TO_ARCH = {
   mistral: 'llama',          // identical tensor layout
   qwen2: 'qwen2',
   qwen2_moe: 'qwen2moe',
+  qwen3: 'qwen3',
+  qwen3_moe: 'qwen3moe',
   gemma: 'gemma',
   gemma2: 'gemma2',
   phi3: 'phi3',
+  phi: 'phi',
+  mixtral: 'mixtral',
   internlm2: 'internlm2',
   deepseek: 'deepseek',
   deepseek_v2: 'deepseek2',
   starcoder2: 'starcoder2',
+  mamba: 'mamba',
+  jamba: 'jamba',
 };
 
 /** Architectures whose tensor naming is the standard LLaMA pattern. */
-const LLAMA_FAMILY = new Set(['llama', 'qwen2', 'gemma', 'gemma2', 'internlm2', 'deepseek', 'starcoder2', 'mistral']);
+const LLAMA_FAMILY = new Set([
+  'llama', 'qwen2', 'qwen3', 'gemma', 'gemma2',
+  'internlm2', 'deepseek', 'starcoder2', 'mistral',
+]);
 
 /**
  * Map an HF tensor name to its GGUF-standard equivalent.
  * Returns the input unchanged if no rule matches.
  */
 export function mapHfTensorName(name, arch) {
+  // Mamba: backbone.layers.<N>.<rest>
+  const mamba = name.match(/^backbone\.layers\.(\d+)\.(.+?)(?:\.(weight|bias))?$/);
+  if (mamba) {
+    const [, idx, sub, suffix] = mamba;
+    const dotSuffix = suffix ? `.${suffix}` : '.weight';
+    return `blk.${idx}.${mapMambaSubname(sub)}${dotSuffix}`;
+  }
+
   // Block-scoped tensors: model.layers.<N>.<rest>
   const m = name.match(/^model\.layers\.(\d+)\.(.+?)(?:\.(weight|bias))?$/);
   if (m) {
@@ -43,7 +60,8 @@ export function mapHfTensorName(name, arch) {
     const mapped = mapBlockSubname(sub, arch);
     return `blk.${idx}.${mapped}${dotSuffix}`;
   }
-  // Top-level tensors
+
+  // Top-level tensors (suffix may be .weight or .bias; default to .weight)
   const tail = name.replace(/\.(weight|bias)$/, '');
   const suffix = name.endsWith('.bias') ? '.bias' : '.weight';
   switch (tail) {
@@ -51,12 +69,36 @@ export function mapHfTensorName(name, arch) {
     case 'model.norm':                return `output_norm${suffix}`;
     case 'lm_head':                   return `output${suffix}`;
     case 'model.embed_positions':    return `pos_embd${suffix}`;
+    case 'backbone.embeddings':      return `token_embd${suffix}`;
+    case 'backbone.norm_f':           return `output_norm${suffix}`;
     default: return name;
   }
 }
 
 function mapBlockSubname(sub, arch) {
-  if (LLAMA_FAMILY.has(arch)) {
+  // Mixtral / MoE: per-expert tensors and router
+  // sub like "block_sparse_moe.experts.<E>.w1"  OR  "block_sparse_moe.gate"
+  const moe = sub.match(/^block_sparse_moe\.experts\.(\d+)\.(w1|w2|w3)$/);
+  if (moe) {
+    const [, expert, w] = moe;
+    const map = { w1: 'ffn_gate_exp', w2: 'ffn_down_exp', w3: 'ffn_up_exp' };
+    return `${map[w]}.${expert}`;
+  }
+  if (sub === 'block_sparse_moe.gate') return 'ffn_gate_inp';
+
+  // Phi3 fused projections
+  if (arch === 'phi3' || arch === 'phi') {
+    switch (sub) {
+      case 'self_attn.qkv_proj':      return 'attn_qkv';
+      case 'self_attn.o_proj':        return 'attn_output';
+      case 'mlp.gate_up_proj':        return 'ffn_up';   // fused gate+up; analyzer treats as ffn_up
+      case 'mlp.down_proj':           return 'ffn_down';
+      case 'input_layernorm':         return 'attn_norm';
+      case 'post_attention_layernorm':return 'ffn_norm';
+    }
+  }
+
+  if (LLAMA_FAMILY.has(arch) || arch === 'mixtral') {
     switch (sub) {
       case 'self_attn.q_proj':        return 'attn_q';
       case 'self_attn.k_proj':        return 'attn_k';
@@ -74,6 +116,20 @@ function mapBlockSubname(sub, arch) {
     }
   }
   return sub.replace(/\./g, '_');
+}
+
+function mapMambaSubname(sub) {
+  switch (sub) {
+    case 'norm':           return 'attn_norm';
+    case 'mixer.in_proj':  return 'ssm_in';
+    case 'mixer.conv1d':   return 'ssm_conv1d';
+    case 'mixer.x_proj':   return 'ssm_x';
+    case 'mixer.dt_proj':  return 'ssm_dt';
+    case 'mixer.out_proj': return 'ssm_out';
+    case 'mixer.A_log':    return 'ssm_a';
+    case 'mixer.D':        return 'ssm_d';
+    default: return sub.replace(/\./g, '_');
+  }
 }
 
 /**
@@ -117,6 +173,16 @@ export function adaptHfRepo({ config, tensors, repoId, source, analyzeModel }) {
   else if (config.layer_norm_eps != null) metadata[`${arch}.attention.layer_norm_epsilon`] = config.layer_norm_eps;
   if (config.rope_theta != null)          metadata[`${arch}.rope.freq_base`] = config.rope_theta;
   if (config.sliding_window != null)      metadata[`${arch}.attention.sliding_window`] = config.sliding_window;
+  // MoE
+  if (config.num_local_experts != null)   metadata[`${arch}.expert_count`] = config.num_local_experts;
+  if (config.num_experts_per_tok != null) metadata[`${arch}.expert_used_count`] = config.num_experts_per_tok;
+  // SSM (Mamba)
+  if (config.state_size != null)          metadata[`${arch}.ssm.state_size`] = config.state_size;
+  if (config.conv_kernel != null)         metadata[`${arch}.ssm.conv_kernel`] = config.conv_kernel;
+  if (config.time_step_rank != null)      metadata[`${arch}.ssm.time_step_rank`] = config.time_step_rank;
+  if (config.intermediate_size != null && (arch === 'mamba' || arch === 'jamba')) {
+    metadata[`${arch}.ssm.inner_size`] = config.intermediate_size;
+  }
   // analyzeModel uses tokens.length for vocabSize; a sparse {length} avoids allocation.
   if (vocabSize > 0) metadata['tokenizer.ggml.tokens'] = { length: vocabSize };
 

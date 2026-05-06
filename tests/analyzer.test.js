@@ -73,6 +73,12 @@ describe('normalizeComponent', () => {
   it('passes through unknown component', () => {
     assert.equal(normalizeComponent('custom_layer'), 'custom_layer');
   });
+
+  it('strips expert index suffix from per-expert MoE tensors', () => {
+    assert.equal(normalizeComponent('ffn_gate_exp.0'), 'ffn_gate_exp');
+    assert.equal(normalizeComponent('ffn_up_exp.7'), 'ffn_up_exp');
+    assert.equal(normalizeComponent('ffn_down_exp.15'), 'ffn_down_exp');
+  });
 });
 
 // ─── toNum ──────────────────────────────────────────────────────────

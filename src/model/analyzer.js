@@ -53,8 +53,15 @@ const COMPONENT_ALIASES = {
   'ffn_down_exps': 'ffn_down_exp',
 };
 
+// Strip a trailing ".<digits>" expert index from per-expert MoE tensors
+// (e.g. "ffn_gate_exp.7" -> "ffn_gate_exp") so analyzer groups them correctly.
+const EXPERT_INDEX_RE = /^(.+_exp)s?\.\d+$/;
+
 function normalizeComponent(component) {
-  return COMPONENT_ALIASES[component] || component;
+  if (COMPONENT_ALIASES[component]) return COMPONENT_ALIASES[component];
+  const m = component.match(EXPERT_INDEX_RE);
+  if (m) return m[1];
+  return component;
 }
 
 function parseTensorName(name) {
