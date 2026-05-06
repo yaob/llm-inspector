@@ -141,4 +141,73 @@ describe('SAFETENSORS_DTYPES', () => {
     assert.equal(SAFETENSORS_DTYPES.I8.bytesPerElement, 1);
     assert.equal(SAFETENSORS_DTYPES.I64.bytesPerElement, 8);
   });
+
+  it('covers unsigned integer types', () => {
+    assert.equal(SAFETENSORS_DTYPES.U8.bytesPerElement, 1);
+    assert.equal(SAFETENSORS_DTYPES.U16.bytesPerElement, 2);
+    assert.equal(SAFETENSORS_DTYPES.U32.bytesPerElement, 4);
+    assert.equal(SAFETENSORS_DTYPES.U64.bytesPerElement, 8);
+  });
+
+  it('covers BOOL as a 1-byte type', () => {
+    assert.equal(SAFETENSORS_DTYPES.BOOL.bytesPerElement, 1);
+  });
+
+  it('covers FP8 variants as 1-byte types', () => {
+    assert.equal(SAFETENSORS_DTYPES.F8_E4M3.bytesPerElement, 1);
+    assert.equal(SAFETENSORS_DTYPES.F8_E5M2.bytesPerElement, 1);
+  });
+});
+
+describe('parseSafetensorsHeader — edge cases', () => {
+  it('returns no tensors for a header containing only __metadata__', () => {
+    const buf = makeBuffer({ __metadata__: { format: 'pt' } });
+    const result = parseSafetensorsHeader(buf);
+    assert.equal(result.tensors.length, 0);
+    assert.deepEqual(result.metadata, { format: 'pt' });
+  });
+
+  it('handles a scalar tensor (empty shape)', () => {
+    const buf = makeBuffer({
+      scalar: { dtype: 'F32', shape: [], data_offsets: [0, 4] },
+    });
+    const result = parseSafetensorsHeader(buf);
+    assert.equal(result.tensors.length, 1);
+    assert.equal(result.tensors[0].numElements, 1);
+    assert.equal(result.tensors[0].byteLength, 4);
+    assert.deepEqual(result.tensors[0].shape, []);
+  });
+
+  it('handles a tensor with a zero-length dimension', () => {
+    const buf = makeBuffer({
+      empty: { dtype: 'F16', shape: [0, 16], data_offsets: [0, 0] },
+    });
+    const result = parseSafetensorsHeader(buf);
+    assert.equal(result.tensors[0].numElements, 0);
+    assert.equal(result.tensors[0].byteLength, 0);
+  });
+
+  it('handles FP8 dtype with a known ggmlType', () => {
+    const buf = makeBuffer({
+      x: { dtype: 'F8_E4M3', shape: [16], data_offsets: [0, 16] },
+    });
+    const result = parseSafetensorsHeader(buf);
+    assert.equal(result.tensors[0].ggmlType, 24);
+    assert.equal(result.tensors[0].byteLength, 16);
+  });
+
+  it('returns an empty metadata object when __metadata__ is absent', () => {
+    const buf = makeBuffer({ a: { dtype: 'F32', shape: [1], data_offsets: [0, 4] } });
+    const result = parseSafetensorsHeader(buf);
+    assert.deepEqual(result.metadata, {});
+  });
+
+  it('preserves shape ordering for multi-dimensional tensors', () => {
+    const buf = makeBuffer({
+      m: { dtype: 'F16', shape: [2, 3, 5, 7], data_offsets: [0, 420] },
+    });
+    const result = parseSafetensorsHeader(buf);
+    assert.deepEqual(result.tensors[0].shape, [2, 3, 5, 7]);
+    assert.equal(result.tensors[0].numElements, 210);
+  });
 });

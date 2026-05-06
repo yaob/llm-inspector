@@ -95,6 +95,32 @@ describe('mapHfTensorName', () => {
     assert.equal(mapHfTensorName('backbone.embeddings.weight', 'mamba'), 'token_embd.weight');
     assert.equal(mapHfTensorName('backbone.norm_f.weight', 'mamba'), 'output_norm.weight');
   });
+
+  it('preserves bias on Mamba conv1d', () => {
+    assert.equal(mapHfTensorName('backbone.layers.3.mixer.conv1d.bias', 'mamba'), 'blk.3.ssm_conv1d.bias');
+  });
+
+  it('maps Qwen3 tensors using the LLaMA-family pattern', () => {
+    assert.equal(mapHfTensorName('model.layers.0.self_attn.q_proj.weight', 'qwen3'), 'blk.0.attn_q.weight');
+    assert.equal(mapHfTensorName('model.layers.0.self_attn.q_norm.weight', 'qwen3'), 'blk.0.attn_q_norm.weight');
+    assert.equal(mapHfTensorName('model.layers.0.mlp.gate_proj.weight', 'qwen3'), 'blk.0.ffn_gate.weight');
+  });
+
+  it('maps Gemma2 sandwich norms', () => {
+    assert.equal(mapHfTensorName('model.layers.0.pre_feedforward_layernorm.weight', 'gemma2'), 'blk.0.ffn_norm.weight');
+    assert.equal(mapHfTensorName('model.layers.0.post_feedforward_layernorm.weight', 'gemma2'), 'blk.0.ffn_norm_2.weight');
+  });
+
+  it('falls back to underscore-joined names for an unknown arch on block tensors', () => {
+    assert.equal(
+      mapHfTensorName('model.layers.0.self_attn.q_proj.weight', 'unknown_arch'),
+      'blk.0.self_attn_q_proj.weight'
+    );
+  });
+
+  it('passes through top-level tensors that have no mapping rule', () => {
+    assert.equal(mapHfTensorName('something.else.weight', 'llama'), 'something.else.weight');
+  });
 });
 
 describe('adaptHfRepo', () => {
@@ -237,5 +263,49 @@ describe('adaptHfRepo', () => {
     const block0 = model.layers.find(l => l.type === 'block' && l.index === 0);
     const ssmGroup = block0.subgroups.find(s => s.label.toLowerCase() === 'ssm');
     assert.ok(ssmGroup, 'block has an ssm subgroup');
+  });
+
+  it('produces a Phi3 model with fused qkv and gate_up grouped under attn/ffn', () => {
+    const hidden = 32, ffn = 64, vocab = 128, layers = 1;
+    const tensors = [
+      { name: 'model.embed_tokens.weight', dtype: 'F16', shape: [vocab, hidden], dataOffsets: [0, 0], numElements: vocab * hidden, byteLength: vocab * hidden * 2, ggmlType: 1 },
+      { name: 'model.norm.weight',         dtype: 'F32', shape: [hidden],         dataOffsets: [0, 0], numElements: hidden, byteLength: hidden * 4, ggmlType: 0 },
+      { name: 'lm_head.weight',            dtype: 'F16', shape: [vocab, hidden], dataOffsets: [0, 0], numElements: vocab * hidden, byteLength: vocab * hidden * 2, ggmlType: 1 },
+    ];
+    for (let i = 0; i < layers; i++) {
+      tensors.push({ name: `model.layers.${i}.input_layernorm.weight`,          dtype: 'F32', shape: [hidden], dataOffsets: [0, 0], numElements: hidden, byteLength: hidden * 4, ggmlType: 0 });
+      tensors.push({ name: `model.layers.${i}.post_attention_layernorm.weight`, dtype: 'F32', shape: [hidden], dataOffsets: [0, 0], numElements: hidden, byteLength: hidden * 4, ggmlType: 0 });
+      tensors.push({ name: `model.layers.${i}.self_attn.qkv_proj.weight`,       dtype: 'F16', shape: [3 * hidden, hidden], dataOffsets: [0, 0], numElements: 3 * hidden * hidden, byteLength: 3 * hidden * hidden * 2, ggmlType: 1 });
+      tensors.push({ name: `model.layers.${i}.self_attn.o_proj.weight`,         dtype: 'F16', shape: [hidden, hidden], dataOffsets: [0, 0], numElements: hidden * hidden, byteLength: hidden * hidden * 2, ggmlType: 1 });
+      tensors.push({ name: `model.layers.${i}.mlp.gate_up_proj.weight`,         dtype: 'F16', shape: [2 * ffn, hidden], dataOffsets: [0, 0], numElements: 2 * ffn * hidden, byteLength: 2 * ffn * hidden * 2, ggmlType: 1 });
+      tensors.push({ name: `model.layers.${i}.mlp.down_proj.weight`,            dtype: 'F16', shape: [hidden, ffn], dataOffsets: [0, 0], numElements: hidden * ffn, byteLength: hidden * ffn * 2, ggmlType: 1 });
+    }
+    const phi3Config = {
+      model_type: 'phi3', num_hidden_layers: layers,
+      hidden_size: hidden, intermediate_size: ffn,
+      num_attention_heads: 4, num_key_value_heads: 4,
+      max_position_embeddings: 2048, vocab_size: vocab,
+      rms_norm_eps: 1e-5,
+    };
+    const model = adaptHfRepo({ config: phi3Config, tensors, repoId: 'x/phi3', analyzeModel });
+    assert.equal(model.arch, 'phi3');
+    const block0 = model.layers.find(l => l.type === 'block' && l.index === 0);
+    const labels = block0.subgroups.map(s => s.label.toLowerCase());
+    assert.ok(labels.some(l => l.includes('attn') || l.includes('attention')), `expected an attention subgroup, got ${labels}`);
+    assert.ok(labels.some(l => l.includes('ffn') || l.includes('mlp') || l.includes('feed')), `expected a feedforward subgroup, got ${labels}`);
+    // The fused qkv tensor must end up inside the block, mapped to attn_qkv.
+    const allBlockTensorNames = block0.subgroups.flatMap(s => s.tensors.map(t => t.name));
+    assert.ok(allBlockTensorNames.includes('blk.0.attn_qkv.weight'), 'fused attn_qkv should be present');
+    assert.ok(allBlockTensorNames.includes('blk.0.ffn_up.weight'), 'fused gate_up_proj should map to ffn_up');
+  });
+
+  it('falls back to the input model_type when no mapping exists', () => {
+    const tensors = llamaTensors(1, 32, 64, 128);
+    const model = adaptHfRepo({
+      config: { ...config, model_type: 'totally_made_up', num_hidden_layers: 1 },
+      tensors, repoId: 'x/y', analyzeModel,
+    });
+    assert.equal(model.arch, 'totally_made_up');
+    assert.equal(model.metadata['general.architecture'], 'totally_made_up');
   });
 });

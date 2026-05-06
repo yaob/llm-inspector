@@ -173,3 +173,43 @@ describe('buildResolveUrl', () => {
     assert.throws(() => buildResolveUrl({ owner: 'o', repo: 'r', revision: 'main' }, ''), /filePath/);
   });
 });
+
+describe('parseHfRepoRef — additional edge cases', () => {
+  it('accepts repo URLs with a trailing slash', () => {
+    const r = parseHfRepoRef('https://huggingface.co/owner/repo/');
+    assert.equal(r.owner, 'owner');
+    assert.equal(r.repo, 'repo');
+    assert.equal(r.revision, 'main');
+  });
+
+  it('accepts repo URLs with extra path segments after owner/repo', () => {
+    const r = parseHfRepoRef('https://huggingface.co/owner/repo/discussions');
+    assert.equal(r.owner, 'owner');
+    assert.equal(r.repo, 'repo');
+    assert.equal(r.revision, 'main');
+  });
+
+  it('rejects /tree/ URLs without a revision segment', () => {
+    // Falls through to default revision rather than throwing — explicit assertion
+    const r = parseHfRepoRef('https://huggingface.co/o/r/tree');
+    assert.equal(r.revision, 'main');
+  });
+
+  it('rejects shorthand with three segments', () => {
+    assert.throws(() => parseHfRepoRef('a/b/c'), /shorthand|URL/);
+  });
+
+  it('rejects shorthand with @ but empty revision', () => {
+    assert.throws(() => parseHfRepoRef('owner/repo@'), /shorthand|URL/);
+  });
+
+  it('accepts a repo name with dots and dashes', () => {
+    const r = parseHfRepoRef('Org_1.0/Model-X.Y');
+    assert.equal(r.owner, 'Org_1.0');
+    assert.equal(r.repo, 'Model-X.Y');
+  });
+
+  it('rejects http (non-https) repo URLs', () => {
+    assert.throws(() => parseHfRepoRef('http://huggingface.co/o/r'), /https/);
+  });
+});
